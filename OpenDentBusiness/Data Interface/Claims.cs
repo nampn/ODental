@@ -1,0 +1,506 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Reflection;
+using System.Text;
+using OpenDentBusiness.Crud;
+
+namespace OpenDentBusiness{
+	///<summary></summary>
+	public class Claims{
+		
+		///<summary>Gets claimpaysplits attached to a claimpayment with the associated patient, insplan, and carrier. If showUnattached it also shows all claimpaysplits that have not been attached to a claimpayment. Pass (0,true) to just get all unattached (outstanding) claimpaysplits.</summary>
+		public static List<ClaimPaySplit> RefreshByCheckOld(long claimPaymentNum,bool showUnattached) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<ClaimPaySplit>>(MethodBase.GetCurrentMethod(),claimPaymentNum,showUnattached);
+			}
+			string command=
+				"SELECT claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName) patName_"//Changed from \"_patName\" to patName_ for MySQL 5.5. Also added checks for #<table> and $<table>
+				+",carrier.CarrierName,SUM(claimproc.FeeBilled) feeBilled_,SUM(claimproc.InsPayAmt) insPayAmt_,claim.ClaimNum"
+				+",claimproc.ClaimPaymentNum,claim.PatNum,PaymentRow "
+				+" FROM claim,patient,insplan,carrier,claimproc"
+				+" WHERE claimproc.ClaimNum = claim.ClaimNum"
+				+" AND patient.PatNum = claim.PatNum"
+				+" AND insplan.PlanNum = claim.PlanNum"
+				+" AND insplan.CarrierNum = carrier.CarrierNum"
+				+" AND (claimproc.Status = '1' OR claimproc.Status = '4' OR claimproc.Status=5)"//received or supplemental or capclaim
+ 				+" AND (claimproc.ClaimPaymentNum = '"+POut.Long(claimPaymentNum)+"'";
+			if(showUnattached){
+				command+=" OR (claimproc.InsPayAmt != 0 AND claimproc.ClaimPaymentNum = '0')";
+			}
+			//else shows only items attached to this payment
+			command+=")"
+				+" GROUP BY claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName) "
+				+",carrier.CarrierName,claim.ClaimNum"
+				+",claimproc.ClaimPaymentNum,claim.PatNum";
+			command+=" ORDER BY patName_";
+			DataTable table=Db.GetTable(command);
+			return ClaimPaySplitTableToList(table);
+		}
+
+		///<summary></summary>
+		public static List<Claim> GetClaimsByCheck(long claimPaymentNum) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<Claim>>(MethodBase.GetCurrentMethod(),claimPaymentNum);
+			}
+			string command=
+				"SELECT * "
+				+"FROM claim "
+				+"WHERE claim.ClaimNum IN "
+				+"(SELECT DISTINCT claimproc.ClaimNum "
+				+"FROM claimproc "
+				+"WHERE claimproc.ClaimPaymentNum="+claimPaymentNum+")";
+			return ClaimCrud.SelectMany(command);
+		}
+
+		/// <summary>Gets all outstanding claims for the batch payment window.</summary>
+		public static List<ClaimPaySplit> GetOutstandingClaims() {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<ClaimPaySplit>>(MethodBase.GetCurrentMethod());
+			}
+			string command="SELECT claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName) patName_,"
+				+"carrier.CarrierName,ClaimFee feeBilled_,SUM(claimproc.InsPayAmt) insPayAmt_,claim.ClaimNum,"
+				+"claimproc.ClaimPaymentNum,claim.PatNum,PaymentRow  "
+				+"FROM claim,patient,insplan,carrier,claimproc "
+				+"WHERE claimproc.ClaimNum = claim.ClaimNum "
+				+"AND patient.PatNum = claim.PatNum "
+				+"AND insplan.PlanNum = claim.PlanNum "
+				+"AND insplan.CarrierNum = carrier.CarrierNum "
+				+"AND (claim.ClaimStatus = 'S' "
+				+"OR (claim.ClaimStatus='R' AND claimproc.InsPayAmt>0)) "//certain (very few) received claims will have payment amounts entered but not attached to payment
+				+"AND ClaimType != 'PreAuth' "
+				+"AND claimproc.ClaimPaymentNum=0 ";
+			if(DataConnection.DBtype==DatabaseType.MySql) {
+				command+="GROUP BY claim.ClaimNum ";
+			}
+			else{//oracle
+				command+="GROUP BY claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName),"
+					+"carrier.CarrierName,claim.ClaimNum,claimproc.ClaimPaymentNum,claim.PatNum ";
+			}
+			//+" HAVING SUM(claimproc.InsPayAmt)<SUM(claimproc.InsPayEst)"
+			command+="ORDER BY CarrierName,patName_";
+			DataTable table=Db.GetTable(command);
+			return ClaimPaySplitTableToList(table);
+		}
+
+		/// <summary>Gets all 'claims' attached to the claimpayment.</summary>
+		public static List<ClaimPaySplit> GetAttachedToPayment(long claimPaymentNum) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<ClaimPaySplit>>(MethodBase.GetCurrentMethod(),claimPaymentNum);
+			}
+			string command=
+				"SELECT claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName) patName_,"
+				+"carrier.CarrierName,ClaimFee feeBilled_,SUM(claimproc.InsPayAmt) insPayAmt_,claim.ClaimNum,"
+				+"claimproc.ClaimPaymentNum,claim.PatNum,PaymentRow "
+				+" FROM claim,patient,insplan,carrier,claimproc"
+				+" WHERE claimproc.ClaimNum = claim.ClaimNum"
+				+" AND patient.PatNum = claim.PatNum"
+				+" AND insplan.PlanNum = claim.PlanNum"
+				+" AND insplan.CarrierNum = carrier.CarrierNum"
+				+" AND claimproc.ClaimPaymentNum = "+claimPaymentNum+" ";
+			if(DataConnection.DBtype==DatabaseType.MySql) {
+				command+="GROUP BY claim.ClaimNum ";
+			}
+			else{//oracle
+				command+="GROUP BY claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName)"
+					+",carrier.CarrierName,claim.ClaimNum,claimproc.ClaimPaymentNum,claim.PatNum ";
+			}
+			command+="ORDER BY claimproc.PaymentRow";
+			DataTable table=Db.GetTable(command);
+			return ClaimPaySplitTableToList(table);
+		}
+
+		/// <summary>Gets all secondary claims for the related ClaimPaySplits. Called after a payment has been received.</summary>
+		public static DataTable GetSecondaryClaims(List<ClaimPaySplit> claimsAttached) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<DataTable>(MethodBase.GetCurrentMethod(),claimsAttached);
+			}
+			string command="SELECT DISTINCT ProcNum FROM claimproc WHERE ClaimNum IN (";
+			string claimNums="";//used twice
+			for(int i=0;i<claimsAttached.Count;i++) {
+				if(i>0) {
+					claimNums+=",";
+				}
+				claimNums+=claimsAttached[i].ClaimNum;
+			}
+			command+=claimNums+")";
+			//List<ClaimProc> tempClaimProcs=ClaimProcCrud.SelectMany(command);
+			DataTable table=Db.GetTable(command);
+			if(table.Rows.Count==0) {
+				return new DataTable();//No procedures are attached to this claim somehow so no need to look for a related secondary claim.
+			}
+			command="SELECT claimproc.PatNum,claimproc.ProcDate"
+				+" FROM claimproc"
+				+" JOIN claim ON claimproc.ClaimNum=claim.ClaimNum"
+				+" WHERE ProcNum IN (";
+			bool firstEntry=true;
+			for(int i=0;i<table.Rows.Count;i++) {
+				if(table.Rows[i]["ProcNum"].ToString()=="0") {
+					continue;
+				}
+				if(firstEntry) {
+					firstEntry=false;
+				}
+				else {
+					command+=",";
+				}
+				command+=table.Rows[i]["ProcNum"].ToString();
+			}
+			command+=") AND claimproc.ClaimNum NOT IN ("+claimNums+")"
+				+" AND ClaimType = 'S'"
+				+" GROUP BY claimproc.ClaimNum,claimproc.PatNum,claimproc.ProcDate";
+			DataTable secondaryClaims=Db.GetTable(command);
+			return secondaryClaims;
+		}
+
+		///<summary></summary>
+		public static List<ClaimPaySplit> GetInsPayNotAttachedForFixTool() {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<ClaimPaySplit>>(MethodBase.GetCurrentMethod());
+			}
+			string command=
+				"SELECT claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName) patName_"
+				+",carrier.CarrierName,SUM(claimproc.FeeBilled) feeBilled_,SUM(claimproc.InsPayAmt) insPayAmt_,claim.ClaimNum"
+				+",claimproc.ClaimPaymentNum,claim.PatNum,PaymentRow "
+				+" FROM claim,patient,insplan,carrier,claimproc"
+				+" WHERE claimproc.ClaimNum = claim.ClaimNum"
+				+" AND patient.PatNum = claim.PatNum"
+				+" AND insplan.PlanNum = claim.PlanNum"
+				+" AND insplan.CarrierNum = carrier.CarrierNum"
+				+" AND (claimproc.Status = '1' OR claimproc.Status = '4' OR claimproc.Status=5)"//received or supplemental or capclaim
+				+" AND (claimproc.InsPayAmt != 0 AND claimproc.ClaimPaymentNum = '0')"
+				+" GROUP BY claim.DateService,claim.ProvTreat,CONCAT(CONCAT(patient.LName,', '),patient.FName)"
+				+",carrier.CarrierName,claim.ClaimNum,claimproc.ClaimPaymentNum,claim.PatNum"
+				+" ORDER BY patName_";
+			DataTable table=Db.GetTable(command);
+			return ClaimPaySplitTableToList(table);
+		}
+
+		///<summary></summary>
+		private static List<ClaimPaySplit> ClaimPaySplitTableToList(DataTable table) {
+			//No need to check RemotingRole; no call to db.
+			List<ClaimPaySplit> splits=new List<ClaimPaySplit>();
+			ClaimPaySplit split;
+			for(int i=0;i<table.Rows.Count;i++){
+				split=new ClaimPaySplit();
+				split.DateClaim      =PIn.Date  (table.Rows[i]["DateService"].ToString());
+				split.ProvAbbr       =Providers.GetAbbr(PIn.Long(table.Rows[i]["ProvTreat"].ToString()));
+				split.PatName        =PIn.String(table.Rows[i]["patName_"].ToString());
+				split.PatNum         =PIn.Long  (table.Rows[i]["PatNum"].ToString());
+				split.Carrier        =PIn.String(table.Rows[i]["CarrierName"].ToString());
+				split.FeeBilled      =PIn.Double(table.Rows[i]["feeBilled_"].ToString());
+				split.InsPayAmt      =PIn.Double(table.Rows[i]["insPayAmt_"].ToString());
+				split.ClaimNum       =PIn.Long  (table.Rows[i]["ClaimNum"].ToString());
+				split.ClaimPaymentNum=PIn.Long  (table.Rows[i]["ClaimPaymentNum"].ToString());
+				split.PaymentRow     =PIn.Int   (table.Rows[i]["PaymentRow"].ToString());
+				splits.Add(split);
+			}
+			return splits;
+		}
+
+		///<summary>Gets the specified claim from the database.  Can be null.</summary>
+		public static Claim GetClaim(long claimNum) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<Claim>(MethodBase.GetCurrentMethod(),claimNum);
+			}
+			string command="SELECT * FROM claim"
+				+" WHERE ClaimNum = "+claimNum.ToString();
+			Claim retClaim=Crud.ClaimCrud.SelectOne(command);
+			if(retClaim==null){
+				return null;
+			}
+			command="SELECT * FROM claimattach WHERE ClaimNum = "+POut.Long(claimNum);
+			retClaim.Attachments=Crud.ClaimAttachCrud.SelectMany(command);
+			return retClaim;
+		}
+
+		///<summary>Gets all claims for the specified patient. But without any attachments.</summary>
+		public static List<Claim> Refresh(long patNum) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<Claim>>(MethodBase.GetCurrentMethod(),patNum);
+			}
+			string command=
+				"SELECT * FROM claim"
+				+" WHERE PatNum = "+patNum.ToString()
+				+" ORDER BY dateservice";
+			return Crud.ClaimCrud.SelectMany(command);
+		}
+
+		public static Claim GetFromList(List<Claim> list,long claimNum) {
+			//No need to check RemotingRole; no call to db.
+			for(int i=0;i<list.Count;i++) {
+				if(list[i].ClaimNum==claimNum) {
+					return list[i].Copy();
+				}
+			}
+			return null;
+		}
+
+		///<summary></summary>
+		public static long Insert(Claim claim) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				claim.ClaimNum=Meth.GetLong(MethodBase.GetCurrentMethod(),claim);
+				return claim.ClaimNum;
+			}
+			return Crud.ClaimCrud.Insert(claim);
+		}
+
+		///<summary></summary>
+		public static void Update(Claim claim){
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				Meth.GetVoid(MethodBase.GetCurrentMethod(),claim);
+				return;
+			}
+			Crud.ClaimCrud.Update(claim);
+			//now, delete all attachments and recreate.
+			string command="DELETE FROM claimattach WHERE ClaimNum="+POut.Long(claim.ClaimNum);
+			Db.NonQ(command);
+			for(int i=0;i<claim.Attachments.Count;i++) {
+				claim.Attachments[i].ClaimNum=claim.ClaimNum;
+				ClaimAttaches.Insert(claim.Attachments[i]);
+			}
+		}
+
+		///<summary></summary>
+		public static void Delete(Claim Cur){
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				Meth.GetVoid(MethodBase.GetCurrentMethod(),Cur);
+				return;
+			}
+			string command = "DELETE FROM claim WHERE ClaimNum = '"+POut.Long(Cur.ClaimNum)+"'";
+			Db.NonQ(command);
+			//command = "DELETE FROM canadianclaim WHERE ClaimNum = '"+POut.Long(Cur.ClaimNum)+"'";
+			//Db.NonQ(command);
+			//command = "DELETE FROM canadianextract WHERE ClaimNum = '"+POut.Long(Cur.ClaimNum)+"'";
+			//Db.NonQ(command);
+		}
+
+		///<summary></summary>
+		public static void DetachProcsFromClaim(Claim Cur){
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				Meth.GetVoid(MethodBase.GetCurrentMethod(),Cur);
+				return;
+			}
+			string command = "UPDATE procedurelog SET "
+				+"claimnum = '0' "
+				+"WHERE claimnum = '"+POut.Long(Cur.ClaimNum)+"'";
+			//MessageBox.Show(string command);
+			Db.NonQ(command);
+		}
+
+		/*
+		///<summary>Called from claimsend window and from Claim edit window.  Use 0 to get all waiting claims, or an actual claimnum to get just one claim.</summary>
+		public static ClaimSendQueueItem[] GetQueueList(){
+			return GetQueueList(0,0);
+		}*/
+
+		///<summary>Called from FormRpOutIns. Gets outstanding insurance claims. Requires all fields. provNumList may be empty (but will return null if isAllProv is false). dateMin and dateMax will not be used if they are set to DateTime.MinValue() (01/01/0001). If isPreauth is true only claims of type preauth will be returned.</summary>
+		public static DataTable GetOutInsClaims(bool isAllProv, List<long> provNumList, DateTime dateMin, DateTime dateMax, bool isPreauth){ 
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) { 
+				return Meth.GetTable(MethodBase.GetCurrentMethod(),isAllProv,provNumList,dateMin,dateMax,isPreauth); 
+			} 
+			string command;
+			command = "SELECT carrier.CarrierName,carrier.Phone,claim.ClaimType,patient.FName,patient.LName,patient.MiddleI,patient.PatNum,claim.DateService,claim.DateSent,claim.ClaimFee,claim.ClaimNum "
+				+"FROM carrier,patient,claim,insplan "
+				+"WHERE carrier.CarrierNum = insplan.CarrierNum "
+				+"AND claim.PlanNum = insplan.PlanNum "
+				+"AND claim.PatNum = patient.PatNum "
+				+"AND claim.ClaimStatus='S' ";
+			if(dateMin!=DateTime.MinValue) {
+				command+="AND claim.DateSent <= "+POut.Date(dateMin)+" ";
+			}
+			if(dateMax!=DateTime.MinValue) {
+				command+="AND claim.DateSent >= "+POut.Date(dateMax)+" ";
+			}
+			if(!isAllProv) {
+				if(provNumList.Count>0) {
+					command+="AND claim.ProvBill IN (";
+					command+=""+provNumList[0];
+					for(int i=1;i<provNumList.Count;i++) {
+						command+=","+provNumList[i];
+					}
+					command+=") ";
+				}
+			}
+			if(!isPreauth) {
+				command+="AND claim.ClaimType!='Preauth' ";
+			}
+			command+="ORDER BY carrier.Phone,insplan.PlanNum";
+			object[] parameters={command};
+			if(RemotingClient.RemotingRole==RemotingRole.ClientDirect) {//this is a temporary safe fix
+				Plugins.HookAddCode(null,"Claims.GetOutInsClaims_beforequeryrun",parameters);
+			}
+			command=(string)parameters[0];
+			DataTable table=Db.GetTable(command);
+			return table;
+		}
+
+		///<summary>Called from claimsend window and from Claim edit window.  Use 0 to get all waiting claims, or an actual claimnum to get just one claim.</summary>
+		public static ClaimSendQueueItem[] GetQueueList(long claimNum,long clinicNum,long customTracking) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<ClaimSendQueueItem[]>(MethodBase.GetCurrentMethod(),claimNum,clinicNum,customTracking);
+			}
+			string command=
+				"SELECT claim.ClaimNum,carrier.NoSendElect"
+				+",CONCAT(CONCAT(CONCAT(concat(patient.LName,', '),patient.FName),' '),patient.MiddleI)"
+				+",claim.ClaimStatus,carrier.CarrierName,patient.PatNum,carrier.ElectID,MedType "
+				+"FROM claim "
+				+"Left join insplan on claim.PlanNum = insplan.PlanNum "
+				+"Left join carrier on insplan.CarrierNum = carrier.CarrierNum "
+				+"Left join patient on patient.PatNum = claim.PatNum ";
+			if(claimNum==0){
+				command+="WHERE (claim.ClaimStatus = 'W' OR claim.ClaimStatus = 'P') ";
+			}
+			else{
+				command+="WHERE claim.ClaimNum="+POut.Long(claimNum)+" ";
+			}
+			if(clinicNum>0) {
+				command+="AND claim.ClinicNum="+POut.Long(clinicNum)+" ";
+			}
+			if(customTracking>0) {
+				command+="AND claim.CustomTracking="+POut.Long(customTracking)+" ";
+			}
+			command+="ORDER BY patient.LName";
+			DataTable table=Db.GetTable(command);
+			ClaimSendQueueItem[] listQueue=new ClaimSendQueueItem[table.Rows.Count];
+			for(int i=0;i<table.Rows.Count;i++){
+				listQueue[i]=new ClaimSendQueueItem();
+				listQueue[i].ClaimNum        = PIn.Long   (table.Rows[i][0].ToString());
+				listQueue[i].NoSendElect     = PIn.Bool  (table.Rows[i][1].ToString());
+				listQueue[i].PatName         = PIn.String(table.Rows[i][2].ToString());
+				listQueue[i].ClaimStatus     = PIn.String(table.Rows[i][3].ToString());
+				listQueue[i].Carrier         = PIn.String(table.Rows[i][4].ToString());
+				listQueue[i].PatNum          = PIn.Long   (table.Rows[i][5].ToString());
+				string payorID=PIn.String(table.Rows[i]["ElectID"].ToString());
+				EnumClaimMedType medType=(EnumClaimMedType)PIn.Int(table.Rows[i]["MedType"].ToString());
+				listQueue[i].ClearinghouseNum=Clearinghouses.AutomateClearinghouseSelection(payorID,medType);
+				listQueue[i].MedType=medType;
+			}
+			return listQueue;
+		}
+
+		///<summary>Supply claimnums. Called from X12 to begin the sorting process on claims going to one clearinghouse.</summary>
+		public static List<X12TransactionItem> GetX12TransactionInfo(long claimNum) {
+			//No need to check RemotingRole; no call to db.
+			List<long> claimNums=new List<long>();
+			claimNums.Add(claimNum);
+			return GetX12TransactionInfo(claimNums);
+		}
+
+		///<summary>Supply claimnums. Called from X12 to begin the sorting process on claims going to one clearinghouse.</summary>
+		public static List<X12TransactionItem> GetX12TransactionInfo(List<long> claimNums) {//ArrayList queueItemss){
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				return Meth.GetObject<List<X12TransactionItem>>(MethodBase.GetCurrentMethod(),claimNums);
+			}
+			StringBuilder str=new StringBuilder();
+			for(int i=0;i<claimNums.Count;i++){
+				if(i>0){
+					str.Append(" OR");
+				}
+				str.Append(" claim.ClaimNum="+POut.Long(claimNums[i]));//((ClaimSendQueueItem)queueItems[i]).ClaimNum.ToString());
+			}
+			string command;
+			command="SELECT carrier.ElectID,claim.ProvBill,inssub.Subscriber,"
+				+"claim.PatNum,claim.ClaimNum,CASE WHEN inssub.Subscriber!=claim.PatNum THEN 1 ELSE 0 END AS subscNotPatient "
+				+"FROM claim,insplan,inssub,carrier "
+				+"WHERE claim.PlanNum=insplan.PlanNum "
+				+"AND claim.InsSubNum=inssub.InsSubNum "
+				+"AND carrier.CarrierNum=insplan.CarrierNum "
+				+"AND ("+str.ToString()+") "
+				+"ORDER BY carrier.ElectID,claim.ProvBill,inssub.Subscriber,subscNotPatient,claim.PatNum";
+			DataTable table=Db.GetTable(command);
+			List<X12TransactionItem> retVal=new List<X12TransactionItem>();
+			//object[,] myA=new object[5,table.Rows.Count];
+			X12TransactionItem item;
+			for(int i=0;i<table.Rows.Count;i++){
+				item=new X12TransactionItem();
+				item.PayorId0=PIn.String(table.Rows[i][0].ToString());
+				item.ProvBill1=PIn.Long   (table.Rows[i][1].ToString());
+				item.Subscriber2=PIn.Long   (table.Rows[i][2].ToString());
+				item.PatNum3=PIn.Long   (table.Rows[i][3].ToString());
+				item.ClaimNum4=PIn.Long   (table.Rows[i][4].ToString());
+				retVal.Add(item);
+			}
+			return retVal;
+		}
+
+		///<summary>Also sets the DateSent to today.</summary>
+		public static void SetCanadianClaimSent(long claimNum) {
+			if(RemotingClient.RemotingRole==RemotingRole.ClientWeb) {
+				Meth.GetVoid(MethodBase.GetCurrentMethod(),claimNum);
+				return;
+			}
+			string command="UPDATE claim SET ClaimStatus = 'S',"
+					+"DateSent= "+POut.Date(MiscData.GetNowDateTime())
+					+" WHERE ClaimNum = "+POut.Long(claimNum);
+			Db.NonQ(command);
+		}
+
+	}//end class Claims
+
+	///<summary>This is an odd class.  It holds data for the X12 (4010 only) generation process.  It replaces an older multi-dimensional array, so the names are funny, but helpful to prevent bugs.  Not an actual database table.</summary>
+	public class X12TransactionItem{
+		public string PayorId0;
+		public long ProvBill1;
+		public long Subscriber2;
+		public long PatNum3;
+		public long ClaimNum4;
+	}
+
+	///<summary>Holds a list of claims to show in the claims 'queue' waiting to be sent.  Not an actual database table.</summary>
+	public class ClaimSendQueueItem{
+		///<summary></summary>
+		public long ClaimNum;
+		///<summary></summary>
+		public bool NoSendElect;
+		///<summary></summary>
+		public string PatName;
+		///<summary>Single char: U,H,W,P,S,or R.</summary>
+		///<remarks>U=Unsent, H=Hold until pri received, W=Waiting in queue, P=Probably sent, S=Sent, R=Received.  A(adj) is no longer used.</remarks>
+		public string ClaimStatus;
+		///<summary></summary>
+		public string Carrier;
+		///<summary></summary>
+		public long PatNum;
+		///<summary></summary>
+		public long ClearinghouseNum;
+		///<summary></summary>
+		public long ClinicNum;
+		///<summary>Enum:EnumClaimMedType 0=Dental, 1=Medical, 2=Institutional</summary>
+		public EnumClaimMedType MedType;
+		///<summary></summary>
+		public string MissingData;
+		///<summary></summary>
+		public string Warnings;
+
+		public ClaimSendQueueItem Copy(){
+			return (ClaimSendQueueItem)MemberwiseClone();
+		}
+	}
+
+	///<summary>Holds a list of claims to show in the Claim Pay Edit window.  Not an actual database table.</summary>
+	public class ClaimPaySplit{
+		///<summary></summary>
+		public long ClaimNum;
+		///<summary></summary>
+		public string PatName;
+		///<summary></summary>
+		public long PatNum;
+		///<summary></summary>
+		public string Carrier;
+		///<summary></summary>
+		public DateTime DateClaim;
+		///<summary></summary>
+		public string ProvAbbr;
+		///<summary></summary>
+		public double FeeBilled;
+		///<summary></summary>
+		public double InsPayAmt;
+		///<summary></summary>
+		public long ClaimPaymentNum;
+		///<summary>1-based</summary>
+		public int PaymentRow;
+	}
+	
+}

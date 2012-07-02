@@ -1,0 +1,39 @@
+﻿using System;
+
+namespace OpenDentBusiness {
+	///<summary>For EHR module, one dated vital sign entry.</summary>
+	[Serializable]
+	public class Vitalsign:TableBase {
+		///<summary>Primary key.</summary>
+		[CrudColumn(IsPriKey=true)]
+		public long VitalsignNum;
+		///<summary>FK to patient.PatNum.</summary>
+		public long PatNum;
+		///<summary>Height of patient in inches. Fractions might be needed some day.  Allowed to be 0.</summary>
+		public float Height;
+		///<summary>Lbs.  Allowed to be 0.</summary>
+		public float Weight;
+		///<summary>Allowed to be 0.</summary>
+		public int BpSystolic;
+		///<summary>Allowed to be 0.</summary>
+		public int BpDiastolic;
+		///<summary>The date that the vitalsigns were taken.</summary>
+		public DateTime DateTaken;
+		///<summary>For an abnormal BMI measurement this must be true in order to meet quality measurement.</summary>
+		public bool HasFollowupPlan;
+		///<summary>If a BMI was not recored, this must be true in order to meet quality measurement.  For children, this is used as an IsPregnant flag, the only valid reason for not taking BMI on children.</summary>
+		public bool IsIneligible;
+		///<summary>For HasFollowupPlan or IsIneligible, this documents the specifics.</summary>
+		public string Documentation;
+		///<summary>.</summary>
+		public bool ChildGotNutrition;
+		///<summary>.</summary>
+		public bool ChildGotPhysCouns;
+
+		///<summary></summary>
+		public Vitalsign Copy() {
+			return (Vitalsign)MemberwiseClone();
+		}
+
+	}
+}

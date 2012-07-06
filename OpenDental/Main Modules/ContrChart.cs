@@ -554,7 +554,8 @@ namespace OpenDental{
 			this.menuToothChart = new System.Windows.Forms.ContextMenu();
 			this.menuItemChartBig = new System.Windows.Forms.MenuItem();
 			this.menuItemChartSave = new System.Windows.Forms.MenuItem();
-			this.toothChart = new SparksToothChart.ToothChartWrapper();
+			//TODO: debug this method
+            //this.toothChart = new SparksToothChart.ToothChartWrapper();
 			this.gridProg = new OpenDental.UI.ODGrid();
 			this.gridPtInfo = new OpenDental.UI.ODGrid();
 			this.butForeignKey = new OpenDental.UI.Button();
